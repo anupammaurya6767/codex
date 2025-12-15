@@ -1178,14 +1178,32 @@ impl ChatComposer {
                     }
                 }
 
-                // If the first line is a custom prompt invocation (e.g. `/prompts:name ...`)
-                // and there is additional user text on subsequent lines, expand only the
-                // first line as the prompt and preserve the remaining lines verbatim.
+                // Decide how to expand custom prompts:
+                // - If trailing lines look like KEY=value arguments, keep the old behavior
+                //   and pass the full text to expand_custom_prompt.
+                // - Otherwise, expand only the first line as the prompt and preserve any
+                //   additional lines as extra user instructions.
+                let trailing_looks_like_args = |trailing: &str| {
+                    trailing
+                        .lines()
+                        .flat_map(|line| line.split_whitespace())
+                        .any(|tok| tok.contains('='))
+                };
+
                 let (first_line, trailing) = match text.split_once('\n') {
                     Some((head, tail)) => (head, Some(tail)),
                     None => (text.as_str(), None),
                 };
-                let expanded_prompt = match expand_custom_prompt(first_line, &self.custom_prompts) {
+
+                let expand_full_text = trailing
+                    .map(|rest| trailing_looks_like_args(rest))
+                    .unwrap_or(true);
+
+                let expanded_prompt = match if expand_full_text {
+                    expand_custom_prompt(&text, &self.custom_prompts)
+                } else {
+                    expand_custom_prompt(first_line, &self.custom_prompts)
+                } {
                     Ok(expanded) => expanded,
                     Err(err) => {
                         self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
@@ -1196,16 +1214,19 @@ impl ChatComposer {
                         return (InputResult::None, true);
                     }
                 };
+
                 if let Some(expanded) = expanded_prompt {
-                    text = if let Some(rest) = trailing {
+                    if expand_full_text {
+                        text = expanded;
+                    } else if let Some(rest) = trailing {
                         if rest.is_empty() {
-                            expanded
+                            text = expanded;
                         } else {
-                            format!("{expanded}\n{rest}")
+                            text = format!("{expanded}\n{rest}");
                         }
                     } else {
-                        expanded
-                    };
+                        text = expanded;
+                    }
                 }
                 if text.is_empty() && !has_attachments {
                     return (InputResult::None, true);
